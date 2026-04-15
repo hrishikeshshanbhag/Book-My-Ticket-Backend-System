@@ -11,7 +11,10 @@ import pg from "pg";
 import { dirname } from "path";
 import { fileURLToPath } from "url";
 import cors from "cors";
-
+import authRouter from "./module/auth/auth.routes.js";
+import { authenticate } from "./module/auth/auth.middleware.js";
+import createUsersTable from "./common/entities/User.entity.js";
+import createSeatsTable from "./common/entities/Seats.entity.js";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const port = process.env.PORT || 8080;
@@ -20,7 +23,7 @@ const port = process.env.PORT || 8080;
 // Pool is nothing but group of connections
 // If you pick one connection out of the pool and release it
 // the pooler will keep that connection open for sometime to other clients to reuse
-const pool = new pg.Pool({
+export const pool = new pg.Pool({
   host: "localhost",
   port: 5433,
   user: "postgres",
@@ -33,22 +36,26 @@ const pool = new pg.Pool({
 
 const app = new express();
 app.use(cors());
-
+app.use(express.json());
+await createUsersTable();
+await createSeatsTable();
 app.get("/", (req, res) => {
   res.sendFile(__dirname + "/index.html");
 });
 //get all seats
-app.get("/seats", async (req, res) => {
+app.use("/api/auth", authRouter);
+app.get("/seats", authenticate, async (req, res) => {
   const result = await pool.query("select * from seats"); // equivalent to Seats.find() in mongoose
   res.send(result.rows);
 });
 
 //book a seat give the seatId and your name
 
-app.put("/:id/:name", async (req, res) => {
+app.put("/:id/:name", authenticate, async (req, res) => {
   try {
     const id = req.params.id;
     const name = req.params.name;
+    const user_id = req.user.id;
     // payment integration should be here
     // verify payment
     const conn = await pool.connect(); // pick a connection from the pool
@@ -67,11 +74,13 @@ app.put("/:id/:name", async (req, res) => {
     // This shows we Do not have the current seat available for booking
     if (result.rowCount === 0) {
       res.send({ error: "Seat already booked" });
+      await conn.query("ROLLBACK");
       return;
     }
     //if we get the row, we are safe to update
-    const sqlU = "update seats set isbooked = 1, name = $2 where id = $1";
-    const updateResult = await conn.query(sqlU, [id, name]); // Again to avoid SQL INJECTION we are using $1 and $2 as placeholders
+    const sqlU =
+      "update seats set isbooked = 1,user_id = $3, name = $2 where id = $1";
+    const updateResult = await conn.query(sqlU, [id, name, user_id]); // Again to avoid SQL INJECTION we are using $1 and $2 as placeholders
 
     //end transaction by committing
     await conn.query("COMMIT");
